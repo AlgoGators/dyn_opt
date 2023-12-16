@@ -1,5 +1,6 @@
 import pandas as pd
 import numpy as np
+import copy
 
 from statistical_functions import portfolio_covar
 from math import sqrt
@@ -159,12 +160,36 @@ def get_optimized_positions(
 
     costs_per_contract_in_weight_terms = get_costs_per_contract_in_weight_terms(notional_exposures_per_contract, capital, costs_per_contract)
 
+    weights_per_contract = get_weights_per_contract(notional_exposures_per_contract, capital)
+
     current_weights = zero_weights(instruments)
 
     covariance_matrix = portfolio_covar(returns_df)
 
     tracking_error = get_tracking_error(covariance_matrix, optimal_portfolio_weights, current_weights)
 
-    print(tracking_error)
+    while True:
+        # have to use a deepcopy because dictionaries are mutable so they'd reference the same MEM address
+        previous_weights = copy.deepcopy(current_weights)
+        best_tracking_error = tracking_error
 
-    return {'ES' : 1, 'ZN' : 0}
+        best_instrument = None
+
+        for instrument in instruments:
+            current_weights[instrument] = current_weights[instrument] + weights_per_contract[instrument]
+            tracking_error = get_tracking_error(covariance_matrix, optimal_portfolio_weights, current_weights)
+
+            if tracking_error < best_tracking_error:
+                best_tracking_error = tracking_error
+                best_instrument = instrument
+
+        # set current_weights back to previous_weights and increment the weight for the best instrument
+        current_weights = previous_weights
+
+        # check if there was a best instrument
+        if best_instrument is not None:
+            current_weights[best_instrument] = current_weights[best_instrument] + weights_per_contract[best_instrument]
+        else:
+            break
+
+    return current_weights
