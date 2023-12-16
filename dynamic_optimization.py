@@ -192,4 +192,9 @@ def get_optimized_positions(
         else:
             break
 
-    return current_weights
+    optimal_contracts = {}
+
+    for instrument in instruments:
+        optimal_contracts[instrument] = current_weights[instrument] / weights_per_contract[instrument]
+
+    return optimal_contracts
