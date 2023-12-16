@@ -1,6 +1,8 @@
 import pandas as pd
 import numpy as np
 
+from statistical_functions import portfolio_covar
+from math import sqrt
 
 def get_optimal_portfolio_weights(
     optimal_positions : dict,
@@ -107,11 +109,34 @@ def zero_weights(
     return weights
 
 
+def get_tracking_error(
+    covariance_matrix : np.array,
+    optimal_portfolio_weights : dict,
+    current_weights : dict) -> float:
+    """
+    """
+
+    instruments = list(optimal_portfolio_weights.keys())
+
+    tracking_error_weights = []
+
+    for instrument in instruments:
+        tracking_error_weights.append(current_weights[instrument] - optimal_portfolio_weights[instrument])
+    
+    tracking_error_weights = np.array(tracking_error_weights)
+
+    
+    tracking_error = sqrt(tracking_error_weights.dot(covariance_matrix).dot(tracking_error_weights))
+
+    return tracking_error
+
+
 def get_optimized_positions(
     optimal_positions : dict,
     notional_exposures_per_contract : dict,
     capital : float,
-    costs_per_contract : dict) -> dict:
+    costs_per_contract : dict,
+    returns_df : pd.DataFrame) -> dict:
     """
     Returns a dictionary of optimized positions given certain capital
 
@@ -136,6 +161,10 @@ def get_optimized_positions(
 
     current_weights = zero_weights(instruments)
 
-    
+    covariance_matrix = portfolio_covar(returns_df)
+
+    tracking_error = get_tracking_error(covariance_matrix, optimal_portfolio_weights, current_weights)
+
+    print(tracking_error)
 
     return {'ES' : 1, 'ZN' : 0}
