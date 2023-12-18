@@ -24,7 +24,10 @@ class TestDynamicOptimization(unittest.TestCase):
         capital = 500_000
         costs_per_contract = {'ZF' : 5.50, 'ZN' : 11.50, 'MES': 0.875}
 
+        currently_held_positions = {'ZF': 3, 'ZN': 0, 'MES': 0}
+
         result = get_optimized_positions(
+            currently_held_positions=currently_held_positions,
             optimal_positions=optimal_positions, 
             notional_exposures_per_contract=notional_exposures_per_contract,
             capital=capital,
