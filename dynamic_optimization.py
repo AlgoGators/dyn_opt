@@ -45,8 +45,10 @@ def get_weights_per_contract(
     ---
         notional_exposures_per_contract : dict
             Dictionary of the notional exposure per contract for each instrument
+            (in same currency as capital)
         capital : float
             The capital available to be used
+            (in same currency as notional_exposures_per_contract)
     ---
     """
 
@@ -71,8 +73,10 @@ def get_costs_per_contract_in_weight_terms(
     ---
         notional_exposures_per_contract : dict
             Dictionary of the notional exposure per contract for each instrument
+            (in same currency as capital)
         capital : float
             The capital available to be used
+            (in same currency as notional_exposures_per_contract)
         costs_per_contract : dict
             Dictionary of the costs per contract for each instrument (estimate)
     ---
@@ -93,6 +97,17 @@ def get_costs_per_contract_in_weight_terms(
 def convert_positions_to_weight(
     positions : dict,
     weights_per_contract : dict) -> dict:
+    """
+    Converts a dictionary of positions into a dictionary of weights
+
+    Parameters:
+    ---
+        positions : dict
+            Dictionary of positions for each instrument
+        weights_per_contract : dict
+            Dictionary of weights per contract for each instrument
+    ---
+    """
 
     instruments = list(positions.keys())
 
@@ -154,7 +169,6 @@ def get_tracking_error(
     
     tracking_error_weights = np.array(tracking_error_weights)
 
-    
     tracking_error = sqrt(tracking_error_weights.dot(covariance_matrix).dot(tracking_error_weights))
     
     tracking_error += cost_penalty
@@ -187,36 +201,8 @@ def get_cost_penalty(
     for instrument in instruments:
         cost_of_all_trades += abs(currently_held_positions_weights[instrument] - optimized_positions_weights[instrument]) * costs_per_contract_in_weight_terms[instrument]
 
-    # Carver uses 50x for the cost penalty but [10-100] is reasonable
+    # NOTE Carver uses 50x for the cost penalty but [10-100] is reasonable
     return cost_of_all_trades * 50
-
-
-def get_buffered_trades(
-    currently_held_positions : dict,
-    optimized_positions : dict,
-    current_portfolio_tracking_error : float,
-    risk_target : float,
-    asymmetric_buffer : float = 0.05) -> dict:
-    
-    instruments = list(currently_held_positions.keys())
-    
-    required_trades = {}
-
-    buffer = risk_target * asymmetric_buffer
-
-    # if the current portfolio is good enough, do no trades
-    if (current_portfolio_tracking_error < buffer):
-        for instrument in instruments:
-            required_trades[instrument] = 0.0
-
-        return currently_held_positions
-    
-    adjustment_factor = max((current_portfolio_tracking_error - buffer) / current_portfolio_tracking_error, 0.0)
-
-    for instrument in instruments:
-        required_trades[instrument] = round(adjustment_factor * (optimized_positions[instrument] - currently_held_positions[instrument]))
-    
-    return required_trades
 
 
 def get_optimized_weights(
@@ -226,7 +212,28 @@ def get_optimized_weights(
     weights_per_contract : dict,
     costs_per_contract_in_weight_terms : dict,
     covariance_matrix : np.array,
-    cost_penalty) -> dict:    
+    cost_penalty) -> dict:
+    """
+    Iterates over instruments, with single contract increments to find the best tracking error under a greedy algorithm
+
+    Parameters:
+    ---
+        instruments : list
+            List of instruments
+        currently_held_position_weights : dict
+            Dictionary of currently held position weights for each instrument
+        optimal_portfolio_weights : dict
+            Dictionary of optimal portfolio weights for each instrument
+        weights_per_contract : dict
+            Dictionary of weights per contract for each instrument
+        costs_per_contract_in_weight_terms : dict
+            Dictionary of costs per contract in weight terms for each instrument
+        covariance_matrix : np.array
+            The covariance matrix of the portfolio
+        cost_penalty : float
+            The cost penalty for all trades
+    ---
+    """
     
     current_weights = zero_weights(instruments)
 
@@ -260,6 +267,53 @@ def get_optimized_weights(
     return current_weights
 
 
+def get_buffered_trades(
+    currently_held_positions : dict,
+    optimized_positions : dict,
+    current_portfolio_tracking_error : float,
+    risk_target : float,
+    asymmetric_buffer : float = 0.05) -> dict:
+    """
+    Returns a dictionary of the trades needed to get the current portfolio to upper bound of the buffered optimized position
+        e.g. have 14 contracts of MES, buffered optimized position is [10, 12], the trade would be -2
+    
+    Parameters:
+    ---
+        currently_held_positions : dict
+            Dictionary of currently held positions for each instrument
+        optimized_positions : dict
+            Dictionary of optimized positions for each instrument
+        current_portfolio_tracking_error : float
+            The tracking error of the current portfolio against the dynamically optimized portfolio
+        risk_target : float
+            The risk target for the portfolio, Carver uses 0.20
+        asymmetric_buffer : float
+            The buffer for the upper bound of the dynamically optimized portfolio 
+            (Normally 0.10 is used but that includes an upper and lower bound for the positions whereas we are only buffering the upper bound of tracking error)
+    ---
+    """
+    
+    instruments = list(currently_held_positions.keys())
+    
+    required_trades = {}
+
+    buffer = risk_target * asymmetric_buffer
+
+    # if the current portfolio is good enough, do no trades
+    if (current_portfolio_tracking_error < buffer):
+        for instrument in instruments:
+            required_trades[instrument] = 0.0
+
+        return currently_held_positions
+    
+    adjustment_factor = max((current_portfolio_tracking_error - buffer) / current_portfolio_tracking_error, 0.0)
+
+    for instrument in instruments:
+        required_trades[instrument] = round(adjustment_factor * (optimized_positions[instrument] - currently_held_positions[instrument]))
+    
+    return required_trades
+
+
 def get_optimized_positions(
     currently_held_positions : dict,
     optimal_positions : dict,
@@ -270,6 +324,9 @@ def get_optimized_positions(
     risk_target : float) -> dict:
     """
     Returns a dictionary of optimized positions given certain capital
+
+    NOTE:
+        All currency values must be in the same currency, i.e. convert all exposures/costs to $
 
     Parameters:
     ---
