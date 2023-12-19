@@ -214,7 +214,7 @@ def get_buffered_trades(
     adjustment_factor = max((current_portfolio_tracking_error - buffer) / current_portfolio_tracking_error, 0.0)
 
     for instrument in instruments:
-        required_trades[instrument] = round(adjustment_factor * (currently_held_positions[instrument] - optimized_positions[instrument]))
+        required_trades[instrument] = round(adjustment_factor * (optimized_positions[instrument] - currently_held_positions[instrument]))
     
     return required_trades
 
@@ -273,6 +273,8 @@ def get_optimized_positions(
 
     Parameters:
     ---
+        currently_held_positions : dict
+            Dictionary of currently held positions for each instrument
         optimal_positions : dict
             Dictionary of optimal positions for each instrument assuming infinite capital (50MM)
         notional_exposures_per_contract : dict
@@ -281,6 +283,10 @@ def get_optimized_positions(
             The capital available to be used
         costs_per_contract : dict
             Dictionary of the costs per contract for each instrument (estimate)
+        returns_df : pd.DataFrame
+            Historical returns for each instruments (daily)
+        risk_target : float
+            The risk target for the portfolio, Carver uses 0.20
     ---
     """
 
@@ -305,10 +311,6 @@ def get_optimized_positions(
     for instrument in instruments:
         optimized_positions[instrument] = optimized_weights[instrument] / weights_per_contract[instrument]
 
-    # current_portfolio_tracking_error = get_tracking_error(covariance_matrix, optimal_portfolio_weights, currently_held_position_weights, cost_penalty)
-
-    # best_tracking_error = get_tracking_error(covariance_matrix, optimal_portfolio_weights, optimized_weights, cost_penalty)
-
     # tracking error of the current portfolio against the dynamically optimized portfolio
     cost_penalty = get_cost_penalty(optimized_weights, currently_held_position_weights, costs_per_contract_in_weight_terms)
 
@@ -317,4 +319,11 @@ def get_optimized_positions(
     # the number of trades we need to make
     buffered_trades = get_buffered_trades(currently_held_positions, optimized_positions, current_portfolio_tracking_error, risk_target=risk_target, asymmetric_buffer=0.05)
 
-    return buffered_trades
+
+    buffered_positions = {}
+
+    # get the positions we need to have after the buffered trades
+    for instrument in instruments:
+        buffered_positions[instrument] = currently_held_positions[instrument] + buffered_trades[instrument]
+
+    return buffered_positions
