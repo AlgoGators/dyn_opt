@@ -17,7 +17,7 @@ class TestDynamicOptimization(unittest.TestCase):
         self.returns_df = MES_returns.merge(ZF_returns, on='Date', how="inner").merge(ZN_returns, on='Date', how="inner")
 
     def test_get_optimal_position(self):
-        expected_result = {'ZF': 0.0, 'ZN': 0.0, 'MES': 13}
+        expected_result = {'ZF': 0, 'ZN': 0, 'MES': 3}
         
         optimal_positions = {'ZF' : 0.4, 'ZN' : 0.9, 'MES': 3.1}
         notional_exposures_per_contract = {'ZF' : 110_000, 'ZN' : 120_000, 'MES': 20_000}
