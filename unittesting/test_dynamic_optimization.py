@@ -17,14 +17,16 @@ class TestDynamicOptimization(unittest.TestCase):
         self.returns_df = MES_returns.merge(ZF_returns, on='Date', how="inner").merge(ZN_returns, on='Date', how="inner")
 
     def test_get_optimal_position(self):
-        expected_result = {'ZF': 0.0, 'ZN': 0.0, 'MES': 4}
+        expected_result = {'ZF': 0.0, 'ZN': 0.0, 'MES': 13}
         
         optimal_positions = {'ZF' : 0.4, 'ZN' : 0.9, 'MES': 3.1}
         notional_exposures_per_contract = {'ZF' : 110_000, 'ZN' : 120_000, 'MES': 20_000}
         capital = 500_000
         costs_per_contract = {'ZF' : 5.50, 'ZN' : 11.50, 'MES': 0.875}
 
-        currently_held_positions = {'ZF': 3, 'ZN': 0, 'MES': 0}
+        currently_held_positions = {'ZF': 0, 'ZN': 0, 'MES': 16}
+
+        risk_target = 0.20
 
         result = get_optimized_positions(
             currently_held_positions=currently_held_positions,
@@ -32,7 +34,8 @@ class TestDynamicOptimization(unittest.TestCase):
             notional_exposures_per_contract=notional_exposures_per_contract,
             capital=capital,
             costs_per_contract=costs_per_contract,
-            returns_df=self.returns_df)
+            returns_df=self.returns_df,
+            risk_target=risk_target)
         
         self.assertEqual(result, expected_result)
 
