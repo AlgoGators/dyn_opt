@@ -90,6 +90,20 @@ def get_costs_per_contract_in_weight_terms(
     return costs_per_contract_in_weight_terms
 
 
+def convert_positions_to_weight(
+    positions : dict,
+    weights_per_contract : dict) -> dict:
+
+    instruments = list(positions.keys())
+
+    position_weights = {}
+
+    for instrument in instruments:
+        position_weights[instrument] = positions[instrument] * weights_per_contract[instrument]
+
+    return position_weights
+
+
 def zero_weights(
     instruments : list) -> dict:
     """
@@ -117,6 +131,18 @@ def get_tracking_error(
     cost_penalty : float) -> float:
     """
     Returns the tracking error of a given portfolio and the optimal portfolio weights
+
+    Parameters:
+    ---
+        covariance_matrix : np.array
+            The covariance matrix of the portfolio
+        optimal_portfolio_weights : dict
+            Dictionary of optimal portfolio weights
+        current_weights : dict
+            Dictionary of current portfolio weights
+        cost_penalty : float
+            The cost penalty for all trades
+    ---
     """
 
     instruments = list(optimal_portfolio_weights.keys())
@@ -131,15 +157,14 @@ def get_tracking_error(
     
     tracking_error = sqrt(tracking_error_weights.dot(covariance_matrix).dot(tracking_error_weights))
     
-    # Carver uses 50x for the cost penalty but [10-100] is reasonable
-    tracking_error += 50 * cost_penalty
+    tracking_error += cost_penalty
 
     return tracking_error
 
 
 def get_cost_penalty(
-    optimized_positions : dict,
-    currently_held_positions : dict,
+    optimized_positions_weights : dict,
+    currently_held_positions_weights : dict,
     costs_per_contract_in_weight_terms : dict) -> float:
     """
     Returns the cost penalty given the optimized positions, currently held positions, and costs per contract in weight terms
@@ -155,14 +180,84 @@ def get_cost_penalty(
     ---
     """
 
-    instruments = list(optimized_positions.keys())
+    instruments = list(optimized_positions_weights.keys())
 
     cost_of_all_trades = 0.0
 
     for instrument in instruments:
-        cost_of_all_trades += abs(currently_held_positions[instrument] - optimized_positions[instrument]) * costs_per_contract_in_weight_terms[instrument]
+        cost_of_all_trades += abs(currently_held_positions_weights[instrument] - optimized_positions_weights[instrument]) * costs_per_contract_in_weight_terms[instrument]
 
-    return cost_of_all_trades
+    # Carver uses 50x for the cost penalty but [10-100] is reasonable
+    return cost_of_all_trades * 50
+
+
+def get_buffered_trades(
+    currently_held_positions : dict,
+    optimized_positions : dict,
+    current_portfolio_tracking_error : float,
+    risk_target : float,
+    asymmetric_buffer : float = 0.05) -> dict:
+    
+    instruments = list(currently_held_positions.keys())
+    
+    required_trades = {}
+
+    buffer = risk_target * asymmetric_buffer
+
+    # if the current portfolio is good enough, do no trades
+    if (current_portfolio_tracking_error < buffer):
+        for instrument in instruments:
+            required_trades[instrument] = 0.0
+
+        return currently_held_positions
+    
+    adjustment_factor = max((current_portfolio_tracking_error - buffer) / current_portfolio_tracking_error, 0.0)
+
+    for instrument in instruments:
+        required_trades[instrument] = round(adjustment_factor * (currently_held_positions[instrument] - optimized_positions[instrument]))
+    
+    return required_trades
+
+
+def get_optimized_weights(
+    instruments : list,
+    currently_held_position_weights : dict,
+    optimal_portfolio_weights : dict,
+    weights_per_contract : dict,
+    costs_per_contract_in_weight_terms : dict,
+    covariance_matrix : np.array,
+    cost_penalty) -> dict:    
+    
+    current_weights = zero_weights(instruments)
+
+    tracking_error = get_tracking_error(covariance_matrix, optimal_portfolio_weights, current_weights, cost_penalty)
+
+    while True:
+        # have to use a deepcopy because dictionaries are mutable so they'd reference the same MEM address
+        previous_weights = copy.deepcopy(current_weights)
+        best_tracking_error = tracking_error
+
+        best_instrument = None
+
+        for instrument in instruments:
+            current_weights[instrument] = current_weights[instrument] + weights_per_contract[instrument]
+            cost_penalty = get_cost_penalty(current_weights, currently_held_position_weights, costs_per_contract_in_weight_terms)
+            tracking_error = get_tracking_error(covariance_matrix, optimal_portfolio_weights, current_weights, cost_penalty)
+
+            if tracking_error < best_tracking_error:
+                best_tracking_error = tracking_error
+                best_instrument = instrument
+
+        # set current_weights back to previous_weights and increment the weight for the best instrument
+        current_weights = previous_weights
+
+        # check if there was a best instrument
+        if best_instrument is not None:
+            current_weights[best_instrument] = current_weights[best_instrument] + weights_per_contract[best_instrument]
+        else:
+            break
+
+    return current_weights
 
 
 def get_optimized_positions(
@@ -171,7 +266,8 @@ def get_optimized_positions(
     notional_exposures_per_contract : dict,
     capital : float,
     costs_per_contract : dict,
-    returns_df : pd.DataFrame) -> dict:
+    returns_df : pd.DataFrame,
+    risk_target : float) -> dict:
     """
     Returns a dictionary of optimized positions given certain capital
 
@@ -196,42 +292,29 @@ def get_optimized_positions(
 
     weights_per_contract = get_weights_per_contract(notional_exposures_per_contract, capital)
 
-    current_weights = zero_weights(instruments)
-
     covariance_matrix = portfolio_covar(returns_df)
 
-    cost_penalty = get_cost_penalty(optimal_positions, currently_held_positions, costs_per_contract_in_weight_terms)
+    currently_held_position_weights = convert_positions_to_weight(currently_held_positions, weights_per_contract)
 
-    tracking_error = get_tracking_error(covariance_matrix, optimal_portfolio_weights, current_weights, cost_penalty)
+    cost_penalty = get_cost_penalty(optimal_portfolio_weights, currently_held_position_weights, costs_per_contract_in_weight_terms)
 
-    while True:
-        # have to use a deepcopy because dictionaries are mutable so they'd reference the same MEM address
-        previous_weights = copy.deepcopy(current_weights)
-        best_tracking_error = tracking_error
+    optimized_weights = get_optimized_weights(instruments, currently_held_position_weights, optimal_portfolio_weights, weights_per_contract, costs_per_contract_in_weight_terms, covariance_matrix, cost_penalty)
 
-        best_instrument = None
-
-        for instrument in instruments:
-            current_weights[instrument] = current_weights[instrument] + weights_per_contract[instrument]
-            cost_penalty = get_cost_penalty(current_weights, currently_held_positions, costs_per_contract_in_weight_terms)
-            tracking_error = get_tracking_error(covariance_matrix, optimal_portfolio_weights, current_weights, cost_penalty)
-
-            if tracking_error < best_tracking_error:
-                best_tracking_error = tracking_error
-                best_instrument = instrument
-
-        # set current_weights back to previous_weights and increment the weight for the best instrument
-        current_weights = previous_weights
-
-        # check if there was a best instrument
-        if best_instrument is not None:
-            current_weights[best_instrument] = current_weights[best_instrument] + weights_per_contract[best_instrument]
-        else:
-            break
-
-    optimal_contracts = {}
+    optimized_positions = {}
 
     for instrument in instruments:
-        optimal_contracts[instrument] = current_weights[instrument] / weights_per_contract[instrument]
+        optimized_positions[instrument] = optimized_weights[instrument] / weights_per_contract[instrument]
 
-    return optimal_contracts
+    # current_portfolio_tracking_error = get_tracking_error(covariance_matrix, optimal_portfolio_weights, currently_held_position_weights, cost_penalty)
+
+    # best_tracking_error = get_tracking_error(covariance_matrix, optimal_portfolio_weights, optimized_weights, cost_penalty)
+
+    # tracking error of the current portfolio against the dynamically optimized portfolio
+    cost_penalty = get_cost_penalty(optimized_weights, currently_held_position_weights, costs_per_contract_in_weight_terms)
+
+    current_portfolio_tracking_error = get_tracking_error(covariance_matrix, optimized_weights, currently_held_position_weights, cost_penalty)
+
+    # the number of trades we need to make
+    buffered_trades = get_buffered_trades(currently_held_positions, optimized_positions, current_portfolio_tracking_error, risk_target=risk_target, asymmetric_buffer=0.05)
+
+    return buffered_trades
