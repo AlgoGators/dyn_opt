@@ -247,13 +247,17 @@ def get_optimized_weights(
         best_instrument = None
 
         for instrument in instruments:
+            # Reset the dictionary to the previous weights
+            current_weights = copy.deepcopy(previous_weights)
+
             current_weights[instrument] = current_weights[instrument] + weights_per_contract[instrument]
             cost_penalty = get_cost_penalty(current_weights, currently_held_position_weights, costs_per_contract_in_weight_terms)
             tracking_error = get_tracking_error(covariance_matrix, optimal_portfolio_weights, current_weights, cost_penalty)
-
+            
             if tracking_error < best_tracking_error:
                 best_tracking_error = tracking_error
                 best_instrument = instrument
+
 
         # set current_weights back to previous_weights and increment the weight for the best instrument
         current_weights = previous_weights
@@ -304,7 +308,7 @@ def get_buffered_trades(
         for instrument in instruments:
             required_trades[instrument] = 0.0
 
-        return currently_held_positions
+        return required_trades
     
     adjustment_factor = max((current_portfolio_tracking_error - buffer) / current_portfolio_tracking_error, 0.0)
 
@@ -375,7 +379,6 @@ def get_optimized_positions(
 
     # the number of trades we need to make
     buffered_trades = get_buffered_trades(currently_held_positions, optimized_positions, current_portfolio_tracking_error, risk_target=risk_target, asymmetric_buffer=0.05)
-
 
     buffered_positions = {}
 
