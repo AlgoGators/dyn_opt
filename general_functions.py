@@ -56,3 +56,17 @@ def get_position_weight(
     """
 
     return number_of_contracts * notional_exposure_per_contract / capital
+
+def copy_dict(
+    original_dict : dict) -> dict:
+    """
+    Returns a copy of a dictionary
+    
+    Parameters:
+    ---
+        original_dict : dict
+            The dictionary to be copied
+    ---
+    """
+
+    return {key : value for key, value in original_dict.items()}
