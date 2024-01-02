@@ -104,9 +104,9 @@ def get_optimized_weights(
 
     tracking_error = get_tracking_error(covariance_matrix, ideal_position_weights, proposed_solution, cost_penalty, instruments)
     
+    best_tracking_error = tracking_error
     while True:
         previous_solution = copy_dict(proposed_solution)
-        best_tracking_error = tracking_error
 
         best_instrument = None
 
