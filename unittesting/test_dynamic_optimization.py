@@ -4,9 +4,10 @@ import sys
 sys.path.append('../DYN_OPT')
 
 import unittest
+import pandas as pd
 
-from dynamic_optimization import *
 from general_functions import get_daily_returns
+import dyn_opt
 
 class TestDynamicOptimization(unittest.TestCase):
     def setUp(self):
@@ -16,21 +17,44 @@ class TestDynamicOptimization(unittest.TestCase):
 
         self.returns_df = MES_returns.merge(ZF_returns, on='Date', how="inner").merge(ZN_returns, on='Date', how="inner")
 
-    def test_get_optimal_position(self):
-        expected_result = {'ZF': 0, 'ZN': 0, 'MES': 3}
+    def test_dyn_opt_neg(self):
+        expected_result = {'ZF': 0, 'ZN': 1, 'MES': -3}
         
-        optimal_positions = {'ZF' : 0.4, 'ZN' : 0.9, 'MES': 3.1}
+        ideal_positions = {'ZF' : 0.4, 'ZN' : 0.9, 'MES': -3.1}
         notional_exposures_per_contract = {'ZF' : 110_000, 'ZN' : 120_000, 'MES': 20_000}
         capital = 500_000
         costs_per_contract = {'ZF' : 5.50, 'ZN' : 11.50, 'MES': 0.875}
 
-        currently_held_positions = {'ZF': 0, 'ZN': 0, 'MES': 16}
+        currently_held_positions = {'ZF': 0, 'ZN': 0, 'MES': 3}
 
         risk_target = 0.20
 
-        result = get_optimized_positions(
-            currently_held_positions=currently_held_positions,
-            optimal_positions=optimal_positions, 
+        result = dyn_opt.get_optimized_positions(
+            held_positions=currently_held_positions,
+            ideal_positions=ideal_positions,
+            notional_exposures_per_contract=notional_exposures_per_contract,
+            capital=capital,
+            costs_per_contract=costs_per_contract,
+            returns_df=self.returns_df,
+            risk_target=risk_target)
+        
+        self.assertEqual(result, expected_result)
+
+    def test_dyn_opt_pos(self):
+        expected_result = {'ZF': 0, 'ZN': 1, 'MES': 3}
+        
+        ideal_positions = {'ZF' : 0.4, 'ZN' : 0.9, 'MES': 3.1}
+        notional_exposures_per_contract = {'ZF' : 110_000, 'ZN' : 120_000, 'MES': 20_000}
+        capital = 500_000
+        costs_per_contract = {'ZF' : 5.50, 'ZN' : 11.50, 'MES': 0.875}
+
+        currently_held_positions = {'ZF': 0, 'ZN': 1, 'MES': 2}
+
+        risk_target = 0.20
+
+        result = dyn_opt.get_optimized_positions(
+            held_positions=currently_held_positions,
+            ideal_positions=ideal_positions,
             notional_exposures_per_contract=notional_exposures_per_contract,
             capital=capital,
             costs_per_contract=costs_per_contract,
