@@ -6,6 +6,19 @@ from general_functions import copy_dict
 def get_weights_per_contract(
     notional_exposure_per_contract : dict,
     capital : float) -> dict:
+    """
+    Returns a dictionary of weights for a single contract for each instrument compared to the total capital
+
+    Parameters:
+    ---
+        notional_exposures_per_contract : dict
+            Dictionary of the notional exposure per contract for each instrument
+            (in same currency as capital)
+        capital : float
+            The capital available to be used
+            (in same currency as notional_exposures_per_contract)
+    ---
+    """
     
     instruments = list(notional_exposure_per_contract.keys())
 
@@ -19,6 +32,17 @@ def get_weights_per_contract(
 def convert_positions_to_weights(
     positions : dict, 
     weights_per_contract : dict) -> dict:
+    """
+    Converts a dictionary of positions into a dictionary of weights
+
+    Parameters:
+    ---
+        positions : dict
+            Dictionary of positions for each instrument
+        weights_per_contract : dict
+            Dictionary of weights per contract for each instrument
+    ---
+    """
 
     instruments = list(positions.keys())
 
@@ -31,6 +55,15 @@ def convert_positions_to_weights(
 
 def zero_weights(
     instruments : list) -> dict:
+    """
+    Returns a dictionary of zero weights for each instrument
+    
+    Parameters:
+    ---
+        instruments : list
+            List of instruments
+    ---
+    """
 
     weights = {}
 
@@ -43,6 +76,20 @@ def convert_costs_to_weights(
     costs_per_contract : dict,
     weights_per_contract : dict,
     capital : float) -> dict:
+    """
+    Returns a dictionary of costs per contract for each instrument compared to the total capital
+
+    Parameters:
+    ---
+        costs_per_contract : dict
+            Dictionary of the costs per contract for each instrument (estimate)
+        weights_per_contract : dict
+            Dictionary of the weights per contract for each instrument
+        capital : float
+            The capital available to be used
+            
+    ---
+    """
 
     instruments = list(costs_per_contract.keys())
 
@@ -58,6 +105,21 @@ def get_cost_penalty(
     held_positions_weights : dict,
     costs_per_contract_weights : dict,
     cost_penalty_scale = 10) -> float:
+    """
+    Returns the cost penalty given the optimized positions, currently held positions, and costs per contract in weight terms
+
+    Parameters:
+    ---
+        proposed_positions_weights : dict
+            Dictionary of proposed weights for each instrument
+        held_positions : dict
+            Dictionary of held positions for each instrument
+        costs_per_contract_in_weight_terms : dict
+            Dictionary of costs per contract in weight terms for each instrument
+        cost_penalty_scale : float (optional)
+            Scales up and down the cost penalty (anywhere from 10-100 is suitable)
+    ---
+    """
 
     instruments = list(proposed_positions_weights.keys())
 
@@ -74,6 +136,24 @@ def get_tracking_error(
     proposed_solution : dict,
     cost_penalty : float,
     instruments : list) -> float:
+    """
+    Returns the tracking error of a given portfolio and the optimal portfolio weights
+
+    Parameters:
+    ---
+        covariance_matrix : np.array
+            The covariance matrix of the portfolio
+        ideal_position_weights : dict
+            Dictionary of ideal position weights (assuming fractional positions can be held)
+        proposed_solution : dict
+            Dictionary of proposed weights
+        cost_penalty : float
+            The cost penalty for all trades
+        instruments : list
+            List of all instruments (to keep everything organized)
+    ---
+    """
+
 
     tracking_error_weights = []
 
@@ -96,6 +176,25 @@ def get_optimized_weights(
     costs_per_contract_weights : dict,
     covariance_matrix : np.array,
     instruments : list) -> dict:
+    """
+    Iterates over instruments, with single contract increments to find the best tracking error under a greedy algorithm
+
+    Parameters:
+    ---
+        held_position_weights : dict
+            Dictionary of held position weights for each instrument
+        ideal_position_weights : dict
+            Dictionary of ideal weights for each instrument
+        weights_per_contract : dict
+            Dictionary of weights per contract for each instrument
+        costs_per_contract_weights : dict
+            Dictionary of costs per contract in weight terms for each instrument
+        covariance_matrix : np.array
+            The covariance matrix of the portfolio
+        instruments : list
+            List of instruments
+    ---
+    """
 
     # First proposed solution is zero contracts for each instrument
     proposed_solution = zero_weights(instruments)
@@ -150,6 +249,27 @@ def get_buffered_trades(
     risk_target : float,
     instruments : list,
     asymmetric_buffer : float = 0.05) -> dict:
+    """
+    Returns a dictionary of the trades needed to get the current portfolio to upper bound of the buffered optimized position
+        e.g. have 14 contracts of MES, buffered optimized position is [10, 12], the trade would be -2
+    
+    Parameters:
+    ---
+        held_positions : dict
+            Dictionary of held positions for each instrument
+        optimized_positions : dict
+            Dictionary of optimized positions for each instrument
+        held_portfolio_tracking_error : float
+            The tracking error of the held portfolio against the dynamically optimized portfolio
+        risk_target : float
+            The risk target for the portfolio, Carver uses 0.20
+        instruments : list
+            List of instruments
+        asymmetric_buffer : float
+            The buffer for the upper bound of the dynamically optimized portfolio 
+            (Normally 0.10 is used but that includes an upper and lower bound for the positions whereas we are only buffering the upper bound of tracking error)
+    ---
+    """
     
     required_trades = {}
 
@@ -177,6 +297,30 @@ def get_optimized_positions(
     costs_per_contract : dict,
     returns_df : pd.DataFrame,
     risk_target : float) -> dict:
+    """
+    Returns a dictionary of optimized positions given certain capital
+
+    NOTE:
+        All currency values must be in the same currency, i.e. convert all exposures/costs to $
+
+    Parameters:
+    ---
+        held_positions : dict
+            Dictionary of held positions for each instrument
+        ideal_positions : dict
+            Dictionary of optimal positions for each instrument assuming fractional positions can be held
+        notional_exposures_per_contract : dict
+            Dictionary of the notional exposure per contract for each instrument
+        capital : float
+            The capital available to be used
+        costs_per_contract : dict
+            Dictionary of the costs per contract for each instrument (estimate)
+        returns_df : pd.DataFrame
+            Historical returns for each instruments (daily)
+        risk_target : float
+            The risk target for the portfolio
+    ---
+    """
     
     instruments = list(ideal_positions.keys())
     instruments.sort()
