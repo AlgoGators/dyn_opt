@@ -1,7 +1,13 @@
 import numpy as np
 import pandas as pd
-from statistical_functions import portfolio_covar
-from general_functions import copy_dict
+
+# Ugly but it allows keeping the same import statement across submodules and parent directories
+try:
+    from .statistical_functions import portfolio_covar
+    from .general_functions import copy_dict
+except ImportError:
+    from statistical_functions import portfolio_covar
+    from general_functions import copy_dict
 
 def get_weights_per_contract(
     notional_exposure_per_contract : dict,
