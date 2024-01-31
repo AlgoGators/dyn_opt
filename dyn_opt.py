@@ -1,5 +1,6 @@
 import numpy as np
 import pandas as pd
+import logging
 
 # Ugly but it allows keeping the same import statement across submodules and parent directories
 try:
@@ -181,7 +182,8 @@ def get_optimized_weights(
     weights_per_contract : dict,
     costs_per_contract_weights : dict,
     covariance_matrix : np.array,
-    instruments : list) -> dict:
+    instruments : list, 
+    iteration_limit : int = 1000) -> dict:
     """
     Iterates over instruments, with single contract increments to find the best tracking error under a greedy algorithm
 
@@ -210,7 +212,9 @@ def get_optimized_weights(
     tracking_error = get_tracking_error(covariance_matrix, ideal_position_weights, proposed_solution, cost_penalty, instruments)
     
     best_tracking_error = tracking_error
+    iteration = 0
     while True:
+        iteration += 1
         previous_solution = copy_dict(proposed_solution)
 
         best_instrument = None
@@ -236,6 +240,11 @@ def get_optimized_weights(
 
         # if there is no best instrument, move on
         if best_instrument is None:
+            break
+
+        if iteration > iteration_limit:
+            logging.critical("Iteration limit reached")
+            logging.critical("Best tracking error: {best_tracking_error}")
             break
 
         # if the ideal position weight is positive, we want to increase our current weight
@@ -302,7 +311,8 @@ def get_optimized_positions(
     capital : float,
     costs_per_contract : dict,
     returns_df : pd.DataFrame,
-    risk_target : float) -> dict:
+    risk_target : float,
+    iteration_limit : int = 1000) -> dict:
     """
     Returns a dictionary of optimized positions given certain capital
 
@@ -341,7 +351,7 @@ def get_optimized_positions(
 
     covariance_matrix = portfolio_covar(returns_df, instruments)
 
-    optimized_weights = get_optimized_weights(held_position_weights, ideal_position_weights, weights_per_contract, costs_per_contract_weights, covariance_matrix, instruments)
+    optimized_weights = get_optimized_weights(held_position_weights, ideal_position_weights, weights_per_contract, costs_per_contract_weights, covariance_matrix, instruments, iteration_limit)
 
     # get tracking error of optimized weights on held positions 
     # NOTE a 0 cost penalty is used since cost has already been figured into the positions
