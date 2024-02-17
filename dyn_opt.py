@@ -1,373 +1,284 @@
-import numpy as np
 import pandas as pd
+import numpy as np
+from datetime import datetime
+from statistical_functions import portfolio_covar
 import logging
 
-# Ugly but it allows keeping the same import statement across submodules and parent directories
-try:
-    from .statistical_functions import portfolio_covar
-    from .general_functions import copy_dict
-except ImportError:
-    from statistical_functions import portfolio_covar
-    from general_functions import copy_dict
+class Parameters:
+    cost_penalty_scalar : float = 10
+    asymmetric_risk_buffer : float = 0.05
+    risk_target : float = 0.20
+    starting_date = 500
 
-def get_weights_per_contract(
-    notional_exposure_per_contract : dict,
-    capital : float) -> dict:
-    """
-    Returns a dictionary of weights for a single contract for each instrument compared to the total capital
+class ConformData():
+    def convert_to_datetime(self, df : pd.DataFrame, format='%d-%m-%y'):
+        df.index = pd.to_datetime(df.index, format=format)
+        return df
 
-    Parameters:
-    ---
-        notional_exposures_per_contract : dict
-            Dictionary of the notional exposure per contract for each instrument
-            (in same currency as capital)
-        capital : float
-            The capital available to be used
-            (in same currency as notional_exposures_per_contract)
-    ---
-    """
+    def dropna(self, df : pd.DataFrame) -> pd.DataFrame:
+        return df.dropna()
     
-    instruments = list(notional_exposure_per_contract.keys())
+    def conform_data(self, df : pd.DataFrame, format='%d-%m-%y') -> pd.DataFrame:
+        df = self.convert_to_datetime(df, format=format)
+        df = self.dropna(df)
+        return df
 
-    weights_per_contract = {}
+    def shared_indices(self, dfs: list) -> list:
+        shared_indices = dfs[0].index
+        for df in dfs[1:]:
+            shared_indices = shared_indices.intersection(df.index)
 
-    for instrument in instruments:
-        weights_per_contract[instrument] = notional_exposure_per_contract[instrument] / capital
-
-    return weights_per_contract
-
-def convert_positions_to_weights(
-    positions : dict, 
-    weights_per_contract : dict) -> dict:
-    """
-    Converts a dictionary of positions into a dictionary of weights
-
-    Parameters:
-    ---
-        positions : dict
-            Dictionary of positions for each instrument
-        weights_per_contract : dict
-            Dictionary of weights per contract for each instrument
-    ---
-    """
-
-    instruments = list(positions.keys())
-
-    position_weights = {}
-
-    for instrument in instruments:
-        position_weights[instrument] = positions[instrument] * weights_per_contract[instrument]
-
-    return position_weights
-
-def zero_weights(
-    instruments : list) -> dict:
-    """
-    Returns a dictionary of zero weights for each instrument
+        return shared_indices
     
-    Parameters:
-    ---
-        instruments : list
-            List of instruments
-    ---
-    """
+    def match_dataframes_to_indices(self, dfs: list) -> list:
+        shared_indices = self.shared_indices(dfs)
 
-    weights = {}
+        return [df.loc[shared_indices] for df in dfs]
 
-    for instrument in instruments:
-        weights[instrument] = 0.0
+class DynamicOptimization():
+    def __init__(
+            self,
+            historical_ideal_positions : pd.DataFrame,
+            # historical_percent_returns : pd.DataFrame,
+            historical_rolling_standard_deviations : pd.DataFrame,
+            historical_notional_exposures : pd.DataFrame,
+            historical_costs_per_contract : pd.DataFrame,
+            correlation_matrices : dict,
+            capital : float) -> None:
+        
+        # Load the data in and adjust to datetime and dropna
+        self.historical_ideal_positions : pd.DataFrame = ConformData().conform_data(historical_ideal_positions)
+        # self.historical_percent_returns = ConformData.conform_data(historical_percent_returns)
+        self.historical_rolling_standard_deviations : pd.DataFrame = ConformData().conform_data(historical_rolling_standard_deviations)
+        self.historical_notional_exposures : pd.DataFrame = ConformData().conform_data(historical_notional_exposures)
+        self.historical_costs_per_contract : pd.DataFrame = ConformData().conform_data(historical_costs_per_contract)
+
+        self.historical_ideal_positions, self.historical_rolling_standard_deviations, self.historical_notional_exposures, self.historical_costs_per_contract = ConformData().match_dataframes_to_indices([self.historical_ideal_positions, self.historical_rolling_standard_deviations, self.historical_notional_exposures, self.historical_costs_per_contract])
+
+        self.correlation_matrices = correlation_matrices
+
+        self.capital = capital
+        
+        # Effectively rows and columns
+        self.dates = self.historical_ideal_positions.index.tolist()
+        self.contract_names = self.historical_ideal_positions.columns.tolist()
+
+        # Calculated tables
+        self.historical_weight_per_contract : pd.DataFrame
+        self.historical_weighted_cost_per_contract : pd.DataFrame
+        self.historical_weighted_ideal_positions : pd.DataFrame
+
+        self.historical_held_positions : pd.DataFrame
+
+        self.historical_dynamic_optimized_positions : pd.DataFrame
+
+        # Set tables
+        self.set_weight_per_contract()
+        self.set_weighted_cost_per_contract()
+        self.set_weighted_ideal_positions()
+
+        # Optimize the positions
+        self.set_historically_optimized_positions()
+
+
+    def set_weight_per_contract(self) -> None:
+        self.historical_weight_per_contract = self.historical_notional_exposures / self.capital
     
-    return weights
+    def set_weighted_cost_per_contract(self) -> None:
+        self.historical_weighted_cost_per_contract = self.historical_weight_per_contract * self.historical_costs_per_contract
 
-def convert_costs_to_weights(
-    costs_per_contract : dict,
-    weights_per_contract : dict,
-    capital : float) -> dict:
-    """
-    Returns a dictionary of costs per contract for each instrument compared to the total capital
+    def set_weighted_ideal_positions(self) -> None:
+        self.historical_weighted_ideal_positions = self.historical_ideal_positions * self.historical_weight_per_contract
 
-    Parameters:
-    ---
-        costs_per_contract : dict
-            Dictionary of the costs per contract for each instrument (estimate)
-        weights_per_contract : dict
-            Dictionary of the weights per contract for each instrument
-        capital : float
-            The capital available to be used
-            
-    ---
-    """
+    def set_historically_optimized_positions(self) -> None:
+        # Start with held positions for t=0 @ 0
+        self.historical_held_positions = pd.DataFrame(0, index=[self.dates[Parameters.starting_date]], columns=self.contract_names)
+        
+        # Iterate through the dates, @ starting point
+        for n, date in enumerate(self.dates[Parameters.starting_date:]):
+            optimized_positions = self.optimize_position(date=date)
 
-    instruments = list(costs_per_contract.keys())
-
-    costs_per_contract_weights = {}
-
-    for instrument in instruments:
-        costs_per_contract_weights[instrument] = costs_per_contract[instrument] / capital / weights_per_contract[instrument]
-
-    return costs_per_contract_weights
-
-def get_cost_penalty(
-    proposed_positions_weights : dict,
-    held_positions_weights : dict,
-    costs_per_contract_weights : dict,
-    cost_penalty_scale = 10) -> float:
-    """
-    Returns the cost penalty given the optimized positions, currently held positions, and costs per contract in weight terms
-
-    Parameters:
-    ---
-        proposed_positions_weights : dict
-            Dictionary of proposed weights for each instrument
-        held_positions : dict
-            Dictionary of held positions for each instrument
-        costs_per_contract_in_weight_terms : dict
-            Dictionary of costs per contract in weight terms for each instrument
-        cost_penalty_scale : float (optional)
-            Scales up and down the cost penalty (anywhere from 10-100 is suitable)
-    ---
-    """
-
-    instruments = list(proposed_positions_weights.keys())
-
-    cost_of_all_trades = 0.0
-
-    for instrument in instruments:
-        cost_of_all_trades += abs(held_positions_weights[instrument] - proposed_positions_weights[instrument]) * costs_per_contract_weights[instrument]
-
-    return cost_penalty_scale * cost_of_all_trades
-
-def get_tracking_error(
-    covariance_matrix : np.array,
-    ideal_position_weights : dict,
-    proposed_solution : dict,
-    cost_penalty : float,
-    instruments : list) -> float:
-    """
-    Returns the tracking error of a given portfolio and the optimal portfolio weights
-
-    Parameters:
-    ---
-        covariance_matrix : np.array
-            The covariance matrix of the portfolio
-        ideal_position_weights : dict
-            Dictionary of ideal position weights (assuming fractional positions can be held)
-        proposed_solution : dict
-            Dictionary of proposed weights
-        cost_penalty : float
-            The cost penalty for all trades
-        instruments : list
-            List of all instruments (to keep everything organized)
-    ---
-    """
-
-
-    tracking_error_weights = []
-
-    for instrument in instruments:
-        tracking_error_weights.append(proposed_solution[instrument] - ideal_position_weights[instrument])
-
-    tracking_error_weights = np.array(tracking_error_weights)
-
-    tracking_error_radicand = tracking_error_weights.dot(covariance_matrix).dot(tracking_error_weights)
-    tracking_error = np.sqrt(tracking_error_radicand)
-
-    tracking_error += cost_penalty
-
-    return tracking_error
-
-def get_optimized_weights(
-    held_position_weights : dict,
-    ideal_position_weights : dict,
-    weights_per_contract : dict,
-    costs_per_contract_weights : dict,
-    covariance_matrix : np.array,
-    instruments : list, 
-    iteration_limit : int = 1000) -> dict:
-    """
-    Iterates over instruments, with single contract increments to find the best tracking error under a greedy algorithm
-
-    Parameters:
-    ---
-        held_position_weights : dict
-            Dictionary of held position weights for each instrument
-        ideal_position_weights : dict
-            Dictionary of ideal weights for each instrument
-        weights_per_contract : dict
-            Dictionary of weights per contract for each instrument
-        costs_per_contract_weights : dict
-            Dictionary of costs per contract in weight terms for each instrument
-        covariance_matrix : np.array
-            The covariance matrix of the portfolio
-        instruments : list
-            List of instruments
-    ---
-    """
-
-    # First proposed solution is zero contracts for each instrument
-    proposed_solution = zero_weights(instruments)
-
-    cost_penalty = get_cost_penalty(proposed_solution, held_position_weights, costs_per_contract_weights)
-
-    tracking_error = get_tracking_error(covariance_matrix, ideal_position_weights, proposed_solution, cost_penalty, instruments)
-    
-    best_tracking_error = tracking_error
-    iteration = 0
-    while True:
-        iteration += 1
-        previous_solution = copy_dict(proposed_solution)
-
-        best_instrument = None
-
-        for instrument in instruments:
-            proposed_solution = copy_dict(previous_solution)
-
-            # if the ideal position weight is positive, we want to increase our current weight
-            if (ideal_position_weights[instrument] > 0):
-                proposed_solution[instrument] = proposed_solution[instrument] + weights_per_contract[instrument]
-            # else: decrease the current weight
+            if (n == 0):
+                self.historical_dynamic_optimized_positions = optimized_positions
             else:
-                proposed_solution[instrument] = proposed_solution[instrument] - weights_per_contract[instrument]
+                self.historical_dynamic_optimized_positions = pd.concat([self.historical_dynamic_optimized_positions, optimized_positions])
 
-            cost_penalty = get_cost_penalty(proposed_solution, held_position_weights, costs_per_contract_weights)
-            tracking_error = get_tracking_error(covariance_matrix, ideal_position_weights, proposed_solution, cost_penalty, instruments)
+            if ((n + Parameters.starting_date) == len(self.dates) - 1):
+                break
 
-            if tracking_error < best_tracking_error:
-                best_tracking_error = tracking_error
-                best_instrument = instrument
+            historical_positions = optimized_positions
 
-        proposed_solution = copy_dict(previous_solution)
+            # Gets the next date in the list
+            next_date = [self.dates[Parameters.starting_date + n + 1]]
+            historical_positions.index = next_date
 
-        # if there is no best instrument, move on
-        if best_instrument is None:
-            break
+            self.historical_held_positions = pd.concat([self.historical_held_positions, historical_positions])
 
-        if iteration > iteration_limit:
-            logging.critical("Iteration limit reached")
-            logging.critical("Best tracking error: {best_tracking_error}")
-            break
+    def get_data(self, date : datetime) -> None:
+        tple = (self.historical_ideal_positions.loc[[date]],
+                self.historical_held_positions.loc[[date]],
+                self.historical_rolling_standard_deviations.loc[[date]],
+                self.historical_weight_per_contract.loc[[date]],
+                self.historical_weighted_cost_per_contract.loc[[date]],
+                self.correlation_matrices[date])
+        
+        return tple
 
-        # if the ideal position weight is positive, we want to increase our current weight
-        if (ideal_position_weights[best_instrument] > 0):
-            proposed_solution[best_instrument] = proposed_solution[best_instrument] + weights_per_contract[best_instrument]
-            continue
+    def optimize_position(self, date : datetime) -> pd.DataFrame:
+        ideal_positions, held_positions, rolling_standard_deviations, weight_per_contract, weighted_cost_per_contract, correlation_matrix = self.get_data(date)
 
-        # else: decrease the current weight
-        proposed_solution[best_instrument] = proposed_solution[best_instrument] - weights_per_contract[best_instrument]
+        covariance_matrix = portfolio_covar(rolling_standard_deviation=rolling_standard_deviations, correlation_matrix=correlation_matrix)
 
-    return proposed_solution
+        daily_optimization = DailyOptimization(
+            contract_names = self.contract_names,
+            date = date,
+            held_positions = held_positions,
+            ideal_positions = ideal_positions,
+            weight_per_contract = weight_per_contract,
+            weighted_costs_per_contract = weighted_cost_per_contract,
+            covariance_matrix = covariance_matrix)
+        
+        return daily_optimization.get_buffered_positions()
 
-def get_buffered_trades(
-    held_positions : dict,
-    optimized_positions : dict,
-    held_portfolio_tracking_error : float,
-    risk_target : float,
-    instruments : list,
-    asymmetric_buffer : float = 0.05) -> dict:
-    """
-    Returns a dictionary of the trades needed to get the current portfolio to upper bound of the buffered optimized position
-        e.g. have 14 contracts of MES, buffered optimized position is [10, 12], the trade would be -2
+
+class DailyOptimization():
+    def __init__(
+            self,
+            contract_names : list,
+            date : datetime,
+            held_positions : pd.DataFrame,
+            ideal_positions : pd.DataFrame,
+            weight_per_contract : pd.DataFrame,
+            weighted_costs_per_contract : pd.DataFrame,
+            covariance_matrix : np.array) -> None:
+        
+        self.contract_names = contract_names
+        self.date = date
+        self.held_positions = held_positions
+        self.ideal_positions = ideal_positions
+        self.weight_per_contract = weight_per_contract
+        self.weighted_costs_per_contract = weighted_costs_per_contract
+        self.covariance_matrix = covariance_matrix
+
+        self.weighted_held_positions = self.held_positions * self.weight_per_contract
+        self.weighted_ideal_positions = self.ideal_positions * self.weight_per_contract
+
+        self.optimized_weighted_positions : pd.DataFrame
+
+        #! NEEDS name change
+        self.optimized_weights : pd.DataFrame
+        self.optimized_positions : pd.DataFrame
+        self.buffered_positions : pd.DataFrame
+
+        self.set_optimized_weights()
+        self.set_optimized_positions()
+        self.set_buffered_positions()
+
+    def zero_weights(self):
+        return pd.DataFrame.from_dict(
+            {self.date: [0 for _ in self.contract_names]}, 
+            orient='index', 
+            columns=self.contract_names)
     
-    Parameters:
-    ---
-        held_positions : dict
-            Dictionary of held positions for each instrument
-        optimized_positions : dict
-            Dictionary of optimized positions for each instrument
-        held_portfolio_tracking_error : float
-            The tracking error of the held portfolio against the dynamically optimized portfolio
-        risk_target : float
-            The risk target for the portfolio, Carver uses 0.20
-        instruments : list
-            List of instruments
-        asymmetric_buffer : float
-            The buffer for the upper bound of the dynamically optimized portfolio 
-            (Normally 0.10 is used but that includes an upper and lower bound for the positions whereas we are only buffering the upper bound of tracking error)
-    ---
-    """
+    def get_cost_penalty(self, weighted_proposed_positions : pd.DataFrame) -> float:
+        trading_cost = 0.0
+
+        for contract in self.contract_names:
+            position_delta = abs(weighted_proposed_positions.iloc[0][contract] - self.weighted_held_positions.iloc[0][contract]) / self.weight_per_contract.iloc[0][contract]
+            trading_cost += position_delta * self.weighted_costs_per_contract.iloc[0][contract]
+
+        return trading_cost
     
-    required_trades = {}
+    def get_tracking_error(
+            self,
+            weighted_proposed_positions : pd.DataFrame,
+            weighted_comparison_positions : pd.DataFrame,
+            cost_penalty : float) -> float:
+        
+        tracking_error_weights_vector = weighted_proposed_positions.to_numpy() - weighted_comparison_positions.to_numpy()
 
-    tracking_error_buffer = risk_target * asymmetric_buffer
+        tracking_error = np.sqrt(
+            tracking_error_weights_vector.dot(self.covariance_matrix).dot(tracking_error_weights_vector.T))
 
-    # if the current portfolio is good enough, do no trades
-    if (held_portfolio_tracking_error < tracking_error_buffer):
-        for instrument in instruments:
-            required_trades[instrument] = 0.0
-
-        return required_trades
-
-    adjustment_factor = max((held_portfolio_tracking_error - tracking_error_buffer) / held_portfolio_tracking_error, 0.0)
-
-    for instrument in instruments:
-        required_trades[instrument] = round(adjustment_factor * (optimized_positions[instrument] - held_positions[instrument]))
+        return tracking_error[0][0] + cost_penalty
     
-    return required_trades
+    def set_optimized_weights(self) -> None:
+        weighted_proposed_positions = self.zero_weights()
 
-def get_optimized_positions(
-    held_positions : dict,
-    ideal_positions : dict,
-    notional_exposures_per_contract : dict,
-    capital : float,
-    costs_per_contract : dict,
-    returns_df : pd.DataFrame,
-    risk_target : float,
-    iteration_limit : int = 1000) -> dict:
-    """
-    Returns a dictionary of optimized positions given certain capital
+        cost_penalty : float = self.get_cost_penalty(weighted_proposed_positions=weighted_proposed_positions)
 
-    NOTE:
-        All currency values must be in the same currency, i.e. convert all exposures/costs to $
+        tracking_error : float = self.get_tracking_error(weighted_proposed_positions, self.weighted_ideal_positions, cost_penalty=cost_penalty)
 
-    Parameters:
-    ---
-        held_positions : dict
-            Dictionary of held positions for each instrument
-        ideal_positions : dict
-            Dictionary of optimal positions for each instrument assuming fractional positions can be held
-        notional_exposures_per_contract : dict
-            Dictionary of the notional exposure per contract for each instrument
-        capital : float
-            The capital available to be used
-        costs_per_contract : dict
-            Dictionary of the costs per contract for each instrument (estimate)
-        returns_df : pd.DataFrame
-            Historical returns for each instruments (daily)
-        risk_target : float
-            The risk target for the portfolio
-    ---
-    """
+        best_tracking_error : float = tracking_error
+        iteration : int = 0
+
+        while True:
+            iteration += 1
+            weighted_previous_positions : pd.DataFrame = weighted_proposed_positions.copy(deep=True)
+
+            best_contract = None
+
+            for contract in self.contract_names:
+                weighted_proposed_positions = weighted_previous_positions.copy(deep=True)
+
+
+                if (self.weighted_ideal_positions.iloc[0][contract] > 0):
+                    weighted_proposed_positions.at[self.date, contract] = weighted_proposed_positions.loc[self.date][contract] + self.weight_per_contract.loc[self.date][contract]
+                else:
+                    weighted_proposed_positions.at[self.date, contract] = weighted_proposed_positions.loc[self.date][contract] - self.weight_per_contract.loc[self.date][contract]
+
+                cost_penalty = self.get_cost_penalty(weighted_proposed_positions=weighted_proposed_positions)
+                tracking_error = self.get_tracking_error(weighted_proposed_positions, self.weighted_ideal_positions, cost_penalty=cost_penalty)
+
+                if (tracking_error < best_tracking_error):
+                    best_tracking_error = tracking_error
+                    best_contract = contract
+
+            weighted_proposed_positions = weighted_previous_positions.copy(deep=True)
+
+            if (best_contract is None):
+                break
+
+            if (iteration > 1000):
+                logging.critical("Iteration limit reached")
+                logging.critical(f"Best tracking error: {best_tracking_error}")
+                break
+
+            if (self.weighted_ideal_positions.loc[self.date][best_contract] > 0):
+                weighted_proposed_positions.at[self.date, best_contract] = weighted_proposed_positions.loc[self.date][best_contract] + self.weight_per_contract.loc[self.date][best_contract]
+                continue
+
+            weighted_proposed_positions.at[self.date, best_contract] = weighted_proposed_positions.loc[self.date][best_contract] - self.weight_per_contract.loc[self.date][best_contract]
+
+        self.optimized_weighted_positions = weighted_proposed_positions
+            
+    def set_optimized_positions(self) -> None:
+        self.optimized_positions = self.optimized_weighted_positions / self.weight_per_contract
+
+    def set_buffered_positions(self) -> None:
+        # get tracking error of optimized weights on held positions 
+        # NOTE a 0 cost penalty is used since cost has already been figured into the positions
+        portfolio_tracking_error = self.get_tracking_error(self.optimized_weighted_positions, self.weighted_ideal_positions, 0)
+
+        tracking_error_buffer = Parameters.risk_target * Parameters.asymmetric_risk_buffer
+
+        # if the current portfolio is good enough, do no trades
+        if (portfolio_tracking_error < tracking_error_buffer):
+            self.buffered_positions = self.held_positions
+            return
+        
+        # if the current portfolio is not good enough, do trades
+        adjustment_factor = max((portfolio_tracking_error - tracking_error_buffer) / portfolio_tracking_error, 0.0)
+
+        required_trades = (self.optimized_positions - self.held_positions) * adjustment_factor
+
+        self.buffered_positions = self.held_positions + required_trades
+
+    def get_optimized_weights(self) -> pd.DataFrame:
+        return self.optimized_weighted_positions
     
-    instruments = list(ideal_positions.keys())
-    instruments.sort()
-
-    weights_per_contract = get_weights_per_contract(notional_exposures_per_contract, capital)
+    def get_optimized_positions(self) -> pd.DataFrame:
+        return self.optimized_positions
     
-    ideal_position_weights =  convert_positions_to_weights(ideal_positions, weights_per_contract)
-
-    costs_per_contract_weights = convert_costs_to_weights(costs_per_contract, weights_per_contract, capital)
-
-    held_position_weights = convert_positions_to_weights(held_positions, weights_per_contract)
-
-    covariance_matrix = portfolio_covar(returns_df, instruments)
-
-    optimized_weights = get_optimized_weights(held_position_weights, ideal_position_weights, weights_per_contract, costs_per_contract_weights, covariance_matrix, instruments, iteration_limit)
-
-    # get tracking error of optimized weights on held positions 
-    # NOTE a 0 cost penalty is used since cost has already been figured into the positions
-    held_portfolio_tracking_error = get_tracking_error(covariance_matrix, optimized_weights, held_positions, 0.0, instruments)
-
-    optimized_positions = {}
-
-    for instrument in instruments:
-        optimized_positions[instrument] = optimized_weights[instrument] / weights_per_contract[instrument]
-
-    buffered_trades = get_buffered_trades(held_positions, optimized_positions, held_portfolio_tracking_error, risk_target, instruments)
-
-    buffered_positions = {}
-
-    # get the positions we need to have after the buffered trades
-    for instrument in instruments:
-        buffered_positions[instrument] = held_positions[instrument] + buffered_trades[instrument]
-
-    return buffered_positions
+    def get_buffered_positions(self) -> pd.DataFrame:
+        return self.buffered_positions
