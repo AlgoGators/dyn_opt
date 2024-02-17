@@ -5,63 +5,57 @@ sys.path.append('../DYN_OPT')
 
 import unittest
 import pandas as pd
+import os
+import numpy as np
+from datetime import datetime
 
 from general_functions import get_daily_returns
-import dyn_opt
+from dyn_opt import DynamicOptimization
 
 class TestDynamicOptimization(unittest.TestCase):
-    def setUp(self):
-        MES_returns = get_daily_returns(pd.read_csv('unittesting/data/_MES_Data.csv'), return_column="MES")
-        ZF_returns = get_daily_returns(pd.read_csv('unittesting/data/_ZF_Data.csv'), return_column="ZF")
-        ZN_returns = get_daily_returns(pd.read_csv('unittesting/data/_ZN_Data.csv'), return_column="ZN")
+    def test_dyn_opt(self):
+        contract_names = ['ES', 'NQ', 'ZN']
 
-        self.returns_df = MES_returns.merge(ZF_returns, on='Date', how="inner").merge(ZN_returns, on='Date', how="inner")
+        returns_df = pd.read_csv('unittesting/data/percent_returns.csv', index_col=0)
 
-    # def test_dyn_opt_neg(self):
-    #     expected_result = {'ZF': 0, 'ZN': 1, 'MES': -3}
+        dates = [datetime.strptime(date, '%d-%m-%y') for date in returns_df.index.tolist()]
+
+        capital = 50_000
+
+        #! Loads the data
+        correlation_matrices = {}
+        for n, date in enumerate(dates):
+            correlation_matrices[date] = np.loadtxt(f"unittesting/data/matrices/matrix{n}.csv", delimiter=",")
+
+        specific_date = dates[-10]
+
+        held_positions = pd.DataFrame.from_dict(
+            {specific_date: [0, 0, 0]}, 
+            orient='index', 
+            columns=['ES', 'NQ', 'ZN'])
         
-    #     ideal_positions = {'ZF' : 0.4, 'ZN' : 0.9, 'MES': -3.1}
-    #     notional_exposures_per_contract = {'ZF' : 110_000, 'ZN' : 120_000, 'MES': 20_000}
-    #     capital = 500_000
-    #     costs_per_contract = {'ZF' : 5.50, 'ZN' : 11.50, 'MES': 0.875}
+        ideal_positions = pd.read_csv('unittesting/data/ideal_positions.csv', index_col=0)
+        ideal_positions.index = pd.to_datetime(ideal_positions.index, format='%d-%m-%y')
 
-    #     currently_held_positions = {'ZF': 0, 'ZN': 0, 'MES': 3}
+        weight_per_contract = pd.read_csv('unittesting/data/notional_exposure.csv', index_col=0) / capital
+        weight_per_contract.index = pd.to_datetime(weight_per_contract.index, format='%d-%m-%y')
 
-    #     risk_target = 0.20
+        cost_per_contract = pd.read_csv('unittesting/data/costs.csv', index_col=0)
+        cost_per_contract.index = pd.to_datetime(cost_per_contract.index, format='%d-%m-%y')
 
-    #     result = dyn_opt.get_optimized_positions(
-    #         held_positions=currently_held_positions,
-    #         ideal_positions=ideal_positions,
-    #         notional_exposures_per_contract=notional_exposures_per_contract,
-    #         capital=capital,
-    #         costs_per_contract=costs_per_contract,
-    #         returns_df=self.returns_df,
-    #         risk_target=risk_target)
+        weighted_cost_per_contract = weight_per_contract * cost_per_contract
+
+        dyn_opt = DynamicOptimization(
+            historical_ideal_positions=ideal_positions,
+            # historical_percent_returns=returns_df,
+            historical_rolling_standard_deviations=returns_df.rolling(window=52).std(),
+            historical_notional_exposures=weight_per_contract * capital,
+            historical_costs_per_contract=cost_per_contract,
+            correlation_matrices=correlation_matrices,
+            capital=capital)
         
-    #     self.assertEqual(result, expected_result)
+        # dyn_opt.historical_dynamic_optimized_positions.to_csv('testing/optimized_positions.csv')
 
-    def test_dyn_opt_pos(self):
-        expected_result = {'ZF': 0, 'ZN': 1, 'MES': 3}
-        
-        ideal_positions = {'ZF' : 0.4, 'ZN' : 0.9, 'MES': 3.1}
-        notional_exposures_per_contract = {'ZF' : 110_000, 'ZN' : 120_000, 'MES': 20_000}
-        capital = 500_000
-        costs_per_contract = {'ZF' : 5.50, 'ZN' : 11.50, 'MES': 0.875}
-
-        currently_held_positions = {'ZF': 0, 'ZN': 1, 'MES': 2}
-
-        risk_target = 0.20
-
-        result = dyn_opt.get_optimized_positions(
-            held_positions=currently_held_positions,
-            ideal_positions=ideal_positions,
-            notional_exposures_per_contract=notional_exposures_per_contract,
-            capital=capital,
-            costs_per_contract=costs_per_contract,
-            returns_df=self.returns_df,
-            risk_target=risk_target)
-        
-        self.assertEqual(result, expected_result)
 
 
 if __name__ == '__main__':
