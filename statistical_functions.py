@@ -186,19 +186,19 @@ def correlation_matrix(
     returns_df : pd.DataFrame,
     period : Periods,
     window : int,
-    tickers : list = None) -> np.array:
+    instruments : list = None) -> np.array:
 
     periodic_returns_df = pd.DataFrame()
     
-    if tickers is None:
-        tickers = returns_df.columns.tolist()
-        tickers.sort()
+    if instruments is None:
+        instruments = returns_df.columns.tolist()
+        instruments.sort()
 
-    for ticker in tickers:
-        returns = returns_df[ticker].tolist()
+    for instrument in instruments:
+        returns = returns_df[instrument].tolist()
 
         # groups them and takes the recent window backwards
-        periodic_returns_df[ticker] = [sum(returns[x : x + period.value])
+        periodic_returns_df[instrument] = [sum(returns[x : x + period.value])
                                 for x in range(0, len(returns), period.value)][:-window]
 
     return periodic_returns_df.corr()
@@ -238,9 +238,10 @@ def rolling_std(
     return weighted_stddevs
 
 
-def portfolio_covar( 
-    position_percent_returns : pd.DataFrame,
-    tickers = None) -> np.array:
+def portfolio_covar(
+    # position_percent_returns : pd.DataFrame,
+    rolling_standard_deviation : pd.DataFrame,
+    correlation_matrix : np.array) -> np.array:
     """Calculates a covariance matrix as outlined by Carver on pages 606-607"""
 
     #@ Σ = σ.ρ.σᵀ = σσᵀ ⊙ ρ (using Hadamard product) = Diag(σ) * ρ * Diag(σ)
@@ -250,24 +251,10 @@ def portfolio_covar(
     #@ use 32 day span for standard deviations
     #@ window for equally weighted correlation matrix of 52 weeks
 
-
-    stddev_lst = []
-
-    if tickers is None:
-        tickers = position_percent_returns.columns.tolist()
-        tickers.sort()
-
-    for ticker in tickers:
-        # get the most recent value
-        rolling_stddev = rolling_std(position_percent_returns[ticker])[-1]
-        stddev_lst.append(rolling_stddev)
-
     # this is in the same order as the corr_matrix
-    stddev_array = np.array(stddev_lst)
+    stddev_array = np.array(rolling_standard_deviation.values.flatten())
 
-    corr_matrix = correlation_matrix(position_percent_returns, Periods.WEEKLY, 52, tickers)
-
-    covar = np.dot(np.dot(np.diag(stddev_array), corr_matrix), np.diag(stddev_array))
+    covar = np.dot(np.dot(np.diag(stddev_array), correlation_matrix), np.diag(stddev_array))
 
     return covar
 
