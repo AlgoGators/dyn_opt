@@ -21,7 +21,7 @@ def get_cost_penalty(x : np.ndarray, y : np.ndarray, weighted_cost_per_contract 
 
     return np.sum(trading_cost) * cost_penalty_scalar
 
-def get_portfolio_tracking_error_standard_deviation(x : np.ndarray, y : np.ndarray, covariance_matrix : np.ndarray, cost_penalty : float) -> float:
+def get_portfolio_tracking_error_standard_deviation(x : np.ndarray, y : np.ndarray, covariance_matrix : np.ndarray, cost_penalty : float = 0.0) -> float:
     if np.isnan(x).any() or np.isnan(y).any() or np.isnan(covariance_matrix).any():
         raise ValueError("Input contains NaN values")
     
@@ -48,9 +48,27 @@ def covariance_row_to_matrix(row : np.ndarray) -> np.ndarray:
 
     return matrix
 
+def round_multiple(x : np.ndarray, multiple : np.ndarray) -> np.ndarray:
+    return np.round(x / multiple) * multiple
+
+def buffer_weights(optimized : np.ndarray, held : np.ndarray, weights : np.ndarray, covariance_matrix : np.ndarray, tau : float, asymmetric_risk_buffer : float):
+    tracking_error = get_portfolio_tracking_error_standard_deviation(optimized, held, covariance_matrix)
+
+    tracking_error_buffer = tau * asymmetric_risk_buffer
+
+    # If the tracking error is less than the buffer, we don't need to do anything
+    if tracking_error < tracking_error_buffer:
+        return held
+    
+    adjustment_factor = max((tracking_error - tracking_error_buffer) / tracking_error, 0.0)
+
+    required_trades = (optimized - held) * adjustment_factor
+
+    return round_multiple(held + required_trades, weights)
+
 # Might be worth framing this similar to scipy.minimize function in terms of argument names (or quite frankly, maybe just use scipy.minimize)
-def greedy_algorithm(ideal : np.ndarray, x0 : np.ndarray, weighted_costs_per_contract : np.ndarray, held : np.ndarray, increments : np.ndarray, covariance_matrix : np.ndarray, cost_penalty_scalar : int) -> np.ndarray:
-    if ideal.ndim != 1 or ideal.shape != x0.shape != held.shape != increments.shape != weighted_costs_per_contract.shape:
+def greedy_algorithm(ideal : np.ndarray, x0 : np.ndarray, weighted_costs_per_contract : np.ndarray, held : np.ndarray, weights_per_contract : np.ndarray, covariance_matrix : np.ndarray, cost_penalty_scalar : int) -> np.ndarray:
+    if ideal.ndim != 1 or ideal.shape != x0.shape != held.shape != weights_per_contract.shape != weighted_costs_per_contract.shape:
         raise ValueError("Input shapes do not match")
     if covariance_matrix.ndim != 2 or covariance_matrix.shape[0] != covariance_matrix.shape[1] or len(ideal) != covariance_matrix.shape[0]:
         raise ValueError("Invalid covariance matrix (should be [N x N])")
@@ -70,9 +88,9 @@ def greedy_algorithm(ideal : np.ndarray, x0 : np.ndarray, weighted_costs_per_con
             temp_solution = previous_solution.copy()
 
             if temp_solution[idx] < ideal[idx]:
-                temp_solution[idx] += increments[idx]
+                temp_solution[idx] += weights_per_contract[idx]
             else:
-                temp_solution[idx] -= increments[idx]
+                temp_solution[idx] -= weights_per_contract[idx]
 
             cost_penalty = get_cost_penalty(held, temp_solution, weighted_costs_per_contract, cost_penalty_scalar)
             tracking_error = get_portfolio_tracking_error_standard_deviation(ideal, temp_solution, covariance_matrix, cost_penalty)
@@ -85,9 +103,9 @@ def greedy_algorithm(ideal : np.ndarray, x0 : np.ndarray, weighted_costs_per_con
             break
 
         if proposed_solution[best_IDX] <= ideal[best_IDX]:
-            proposed_solution[best_IDX] += increments[best_IDX]
+            proposed_solution[best_IDX] += weights_per_contract[best_IDX]
         else:
-            proposed_solution[best_IDX] -= increments[best_IDX]
+            proposed_solution[best_IDX] -= weights_per_contract[best_IDX]
         
         iteration += 1
 
@@ -95,14 +113,18 @@ def greedy_algorithm(ideal : np.ndarray, x0 : np.ndarray, weighted_costs_per_con
 
 def clean_data(*args):
     dfs = [df.set_index(pd.to_datetime(df.index)).dropna() for df in args]
-
     intersection_index = reduce(lambda x, y: x.intersection(y), (df.index for df in dfs))
-
-    dfs = [df.loc[intersection_index] for df in dfs]
+    dfs = [df.loc[intersection_index].astype(np.float64) for df in dfs]
 
     return dfs
 
-def iterator(covariances : pd.DataFrame, ideal_positions_weighted : pd.DataFrame, weight_per_contract : pd.DataFrame, costs_per_contract_weighted : pd.DataFrame) -> pd.DataFrame:
+def iterator(
+        covariances : pd.DataFrame, 
+        ideal_positions_weighted : pd.DataFrame, 
+        weight_per_contract : pd.DataFrame, 
+        costs_per_contract_weighted : pd.DataFrame,
+        tau : float,
+        asymmetric_risk_buffer : float) -> pd.DataFrame:
     #@ Data cleaning
     ideal_positions_weighted, weight_per_contract, costs_per_contract_weighted, covariances = clean_data(ideal_positions_weighted, weight_per_contract, costs_per_contract_weighted, covariances)
 
@@ -119,6 +141,7 @@ def iterator(covariances : pd.DataFrame, ideal_positions_weighted : pd.DataFrame
     cost_penalty_scalar = 10
 
     optimized_positions = pd.DataFrame(index=dates, columns=ideal_positions_weighted.columns)
+    optimized_positions = optimized_positions.astype(np.float64)
 
     for n, date in enumerate(dates):
         ideal_positions_weighted_one_day = ideal_positions_weighted.loc[date].values
@@ -132,9 +155,13 @@ def iterator(covariances : pd.DataFrame, ideal_positions_weighted : pd.DataFrame
             current_date_IDX = dates.get_loc(date)
             held_positions_weighted = optimized_positions.iloc[current_date_IDX - 1].values * weight_per_contract_one_day
 
-
         optimized_weights_one_day = greedy_algorithm(ideal_positions_weighted_one_day, x0, costs_per_contract_weighted_one_day, held_positions_weighted, weight_per_contract_one_day, covariance_matrix_one_day, cost_penalty_scalar)
-        optimized_positions_one_day = optimized_weights_one_day / weight_per_contract_one_day
+
+        buffered_weights = buffer_weights(
+            optimized_weights_one_day, held_positions_weighted, weight_per_contract_one_day, 
+            covariance_matrix_one_day, tau, asymmetric_risk_buffer)
+
+        optimized_positions_one_day = buffered_weights / weight_per_contract_one_day
 
         optimized_positions.loc[date] = optimized_positions_one_day
 
