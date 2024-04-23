@@ -166,3 +166,26 @@ def iterator(
         optimized_positions.loc[date] = optimized_positions_one_day
 
     return optimized_positions
+
+def aggregator(
+    capital : float,
+    fixed_cost_per_contract : float,
+    tau : float,
+    asymmetric_risk_buffer : float,
+    unadj_prices : pd.DataFrame,
+    multipliers : pd.DataFrame,
+    ideal_positions : pd.DataFrame,
+    covariances : pd.DataFrame) -> pd.DataFrame:
+
+    unadj_prices, multipliers, ideal_positions, covariances = clean_data(unadj_prices, multipliers, ideal_positions, covariances)
+
+    notional_exposure_per_contract = get_notional_exposure_per_contract(unadj_prices, multipliers)
+    weight_per_contract = get_weight_per_contract(notional_exposure_per_contract, capital)
+
+    ideal_positions_weighted = ideal_positions * weight_per_contract
+
+        
+    costs_per_contract = pd.DataFrame(index=ideal_positions_weighted.index, columns=ideal_positions_weighted.columns).fillna(fixed_cost_per_contract)
+    costs_per_contract_weighted = costs_per_contract / capital / weight_per_contract
+
+    return iterator(covariances, ideal_positions_weighted, weight_per_contract, costs_per_contract_weighted, tau, asymmetric_risk_buffer)
