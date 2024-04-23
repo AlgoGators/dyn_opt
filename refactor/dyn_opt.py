@@ -1,5 +1,6 @@
 import pandas as pd
 import numpy as np
+from functools import reduce
 
 def get_notional_exposure_per_contract(unadj_prices : pd.DataFrame, multipliers : pd.DataFrame) -> pd.DataFrame:
     notional_exposure_per_contract = unadj_prices.apply(lambda col: col * multipliers.loc['Multiplier', col.name])
@@ -12,32 +13,26 @@ def get_cost_penalty(x : np.ndarray, y : np.ndarray, weighted_cost_per_contract 
     """Finds the trading cost to go from x to y, given the weighted cost per contract and the cost penalty scalar"""
 
     #* Should never activate but just in case
-    x = np.array(x).astype(np.float64)
-    y = np.array(y).astype(np.float64)
-    weighted_cost_per_contract = np.array(weighted_cost_per_contract).astype(np.float64)
-    x[np.isnan(x)] = 0
-    y[np.isnan(y)] = 0
-    weighted_cost_per_contract[np.isnan(weighted_cost_per_contract)] = 0
-
+    x = np.nan_to_num(np.asarray(x, dtype=np.float64))
+    y = np.nan_to_num(np.asarray(y, dtype=np.float64))
+    weighted_cost_per_contract = np.nan_to_num(np.asarray(weighted_cost_per_contract, dtype=np.float64))
 
     trading_cost = np.abs(x - y) * weighted_cost_per_contract
 
-    return trading_cost.sum() * cost_penalty_scalar
+    return np.sum(trading_cost) * cost_penalty_scalar
 
 def get_portfolio_tracking_error_standard_deviation(x : np.ndarray, y : np.ndarray, covariance_matrix : np.ndarray, cost_penalty : float) -> float:
     if np.isnan(x).any() or np.isnan(y).any() or np.isnan(covariance_matrix).any():
-        return ValueError("Input contains NaN values")
+        raise ValueError("Input contains NaN values")
     
     tracking_errors = x - y
 
-    print(tracking_errors)
+    radicand = tracking_errors @ covariance_matrix @ tracking_errors.T
 
-    radicand = tracking_errors.dot(covariance_matrix).dot(tracking_errors.T)
-
-    #* deal with negative radicand (really, REALLY shouldn't happen); just return 100% TE
+    #* deal with negative radicand (really, REALLY shouldn't happen)
     #? maybe its a good weight set but for now, it's probably safer this way
     if radicand < 0:
-        return 1.0
+        return 1.0 # Return 100% TE
     
     return np.sqrt(radicand) + cost_penalty
 
@@ -48,21 +43,99 @@ def covariance_row_to_matrix(row : np.ndarray) -> np.ndarray:
     idx = 0
     for i in range(num_instruments):
         for j in range(i, num_instruments):
-            matrix[i, j] = row[idx]
-            matrix[j, i] = row[idx]
+            matrix[i, j] = matrix[j, i] = row[idx]
             idx += 1
 
     return matrix
 
-#x = np.ndarray( [AA,AB,BB])
-covar = np.array([1 ,2 ,3 ])
-covar = covariance_row_to_matrix(covar)
+# Might be worth framing this similar to scipy.minimize function in terms of argument names (or quite frankly, maybe just use scipy.minimize)
+def greedy_algorithm(ideal : np.ndarray, x0 : np.ndarray, weighted_costs_per_contract : np.ndarray, held : np.ndarray, increments : np.ndarray, covariance_matrix : np.ndarray, cost_penalty_scalar : int) -> np.ndarray:
+    if ideal.ndim != 1 or ideal.shape != x0.shape != held.shape != increments.shape != weighted_costs_per_contract.shape:
+        raise ValueError("Input shapes do not match")
+    if covariance_matrix.ndim != 2 or covariance_matrix.shape[0] != covariance_matrix.shape[1] or len(ideal) != covariance_matrix.shape[0]:
+        raise ValueError("Invalid covariance matrix (should be [N x N])")
+    
+    proposed_solution = x0.copy()
+    cost_penalty = get_cost_penalty(held, proposed_solution, weighted_costs_per_contract, cost_penalty_scalar)
+    tracking_error = get_portfolio_tracking_error_standard_deviation(ideal, proposed_solution, covariance_matrix, cost_penalty)
+    best_tracking_error = tracking_error
+    iteration_limit = 1000
+    iteration = 0
 
-print(covar)
+    while iteration <= iteration_limit:
+        previous_solution = proposed_solution.copy()
+        best_IDX = None
+
+        for idx in range(len(proposed_solution)):
+            temp_solution = previous_solution.copy()
+
+            if temp_solution[idx] < ideal[idx]:
+                temp_solution[idx] += increments[idx]
+            else:
+                temp_solution[idx] -= increments[idx]
+
+            cost_penalty = get_cost_penalty(held, temp_solution, weighted_costs_per_contract, cost_penalty_scalar)
+            tracking_error = get_portfolio_tracking_error_standard_deviation(ideal, temp_solution, covariance_matrix, cost_penalty)
+
+            if tracking_error <= best_tracking_error:
+                best_tracking_error = tracking_error
+                best_IDX = idx
+
+        if best_IDX is None:
+            break
+
+        if proposed_solution[best_IDX] <= ideal[best_IDX]:
+            proposed_solution[best_IDX] += increments[best_IDX]
+        else:
+            proposed_solution[best_IDX] -= increments[best_IDX]
+        
+        iteration += 1
+
+    return proposed_solution
+
+def clean_data(*args):
+    dfs = [df.set_index(pd.to_datetime(df.index)).dropna() for df in args]
+
+    intersection_index = reduce(lambda x, y: x.intersection(y), (df.index for df in dfs))
+
+    dfs = [df.loc[intersection_index] for df in dfs]
+
+    return dfs
+
+def iterator(covariances : pd.DataFrame, ideal_positions_weighted : pd.DataFrame, weight_per_contract : pd.DataFrame, costs_per_contract_weighted : pd.DataFrame) -> pd.DataFrame:
+    #@ Data cleaning
+    ideal_positions_weighted, weight_per_contract, costs_per_contract_weighted, covariances = clean_data(ideal_positions_weighted, weight_per_contract, costs_per_contract_weighted, covariances)
+
+    # Make sure they all have the same columns, and order !!
+    intersection_columns = ideal_positions_weighted.columns.intersection(weight_per_contract.columns).intersection(costs_per_contract_weighted.columns)
+    ideal_positions_weighted = ideal_positions_weighted[intersection_columns]
+    weight_per_contract = weight_per_contract[intersection_columns]
+    costs_per_contract_weighted = costs_per_contract_weighted[intersection_columns]
+
+    dates = ideal_positions_weighted.index
+
+    # Initialize x0 and cost penalty scalar
+    x0 = np.zeros(len(ideal_positions_weighted.columns))
+    cost_penalty_scalar = 10
+
+    optimized_positions = pd.DataFrame(index=dates, columns=ideal_positions_weighted.columns)
+
+    for n, date in enumerate(dates):
+        ideal_positions_weighted_one_day = ideal_positions_weighted.loc[date].values
+        costs_per_contract_weighted_one_day = costs_per_contract_weighted.loc[date].values
+        covariance_matrix_one_day = covariance_row_to_matrix(covariances.loc[date].values)
+        weight_per_contract_one_day = weight_per_contract.loc[date].values
+
+        held_positions_weighted = np.zeros(len(ideal_positions_weighted.columns))
+
+        if n != 0:
+            current_date_IDX = dates.get_loc(date)
+            held_positions_weighted = optimized_positions.iloc[current_date_IDX - 1].values * weight_per_contract_one_day
 
 
-x = np.array([-2,2])
-y = np.array([1,3])
+        optimized_weights_one_day = greedy_algorithm(ideal_positions_weighted_one_day, x0, costs_per_contract_weighted_one_day, held_positions_weighted, weight_per_contract_one_day, covariance_matrix_one_day, cost_penalty_scalar)
+        optimized_positions_one_day = optimized_weights_one_day / weight_per_contract_one_day
 
-TE = get_portfolio_tracking_error_standard_deviation(x, y, covar, 0.0)
-print(TE)
+        optimized_positions.loc[date] = optimized_positions_one_day
+
+    return optimized_positions
