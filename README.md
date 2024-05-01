@@ -1,3 +1,5 @@
+# DEPRECATED (SEE RISK_MANAGEMENT)
+
 # Dynamic Optimization
 
 ## What is Dynamic Optimization?
